@@ -13,7 +13,7 @@ const {
     getFooterOffer,
     updateFooterOffer,
     upload // Import the multer upload instance
-} = require('../controllers/homePageController'); // Adjust path as needed
+} = require('../controllers/homepageController'); // Adjust path as needed
 
 // Banner Routes
 // For single image upload, use upload.single('fieldName') where 'fieldName' is the name of the input field in your form
@@ -46,11 +46,11 @@ router.put('/footer-offer', protect, isAdmin, updateFooterOffer);
 router.get('/all', async (req, res) => {
     try {
         // Fetch data directly from models instead of calling controller functions
-        const banner = await require('../controllers/homePageController').Banner.findOne();
-        const shippingBanner = await require('../controllers/homePageController').ShippingBanner.findOne();
-        const imageGrid = await require('../controllers/homePageController').ImageGrid.findOne();
-        const promoBanner = await require('../controllers/homePageController').PromoBanner.findOne();
-        const footerOffer = await require('../controllers/homePageController').FooterOffer.findOne();
+        const banner = await require('../controllers/homepageController').Banner.findOne();
+        const shippingBanner = await require('../controllers/homepageController').ShippingBanner.findOne();
+        const imageGrid = await require('../controllers/homepageController').ImageGrid.findOne();
+        const promoBanner = await require('../controllers/homepageController').PromoBanner.findOne();
+        const footerOffer = await require('../controllers/homepageController').FooterOffer.findOne();
 
         res.json({
             success: true,
