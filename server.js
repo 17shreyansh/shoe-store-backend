@@ -26,10 +26,9 @@ const app = express();
 
 // Middleware setup
 app.use(cors({
-    origin: 'http://localhost:5173', // IMPORTANT: Replace with your actual frontend URL (e.g., React dev server)
-                                     // DO NOT USE '*' if you are sending credentials (cookies)!
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'], // <--- ADD 'PATCH' HERE!
-    credentials: true // IMPORTANT: Allow cookies/authentication headers to be sent
+    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    credentials: true
 }));app.use(express.json()); // Parse JSON request bodies
 app.use(express.urlencoded({ extended: false })); // Parse URL-encoded request bodies
 
