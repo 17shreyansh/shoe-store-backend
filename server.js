@@ -1,4 +1,6 @@
 // server.js
+require("dotenv").config();
+
 const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
@@ -18,15 +20,48 @@ const reviews = require('./routes/reviews')
 const coupon = require('./routes/CouponRoutes')
 const support = require('./routes/supportRoutes'); // Import support ticket routes
 const homepageRoutes = require('./routes/homepageRoutes'); // Import homepage routes
+const menu = require('./routes/menuRoutes'); // Import menu routes
+const OrderService = require('./services/OrderService');
+const cron = require('node-cron');
 
-dotenv.config();
-connectDB();
+// Initialize services and setup
+const initializeServices = async () => {
+    try {
+        // Connect to database
+        await connectDB();
+
+        // Initialize OrderService
+        const orderService = new OrderService();
+
+        // Schedule cleanup job for abandoned orders - runs every 15 minutes
+        cron.schedule('*/15 * * * *', async () => {
+            try {
+                console.log('[Cleanup Job] Starting cleanup of abandoned orders...');
+                const cleanedCount = await orderService.cleanupPendingOrders(30); // Clean orders older than 30 minutes
+                console.log(`[Cleanup Job] Successfully cleaned up ${cleanedCount} abandoned orders`);
+            } catch (error) {
+                console.error('[Cleanup Job] Error cleaning up abandoned orders:', error);
+            }
+        });
+
+        console.log('Services initialized successfully');
+    } catch (error) {
+        console.error('Error initializing services:', error);
+        process.exit(1);
+    }
+};
 
 const app = express();
 
+// Initialize services before starting the server
+initializeServices().catch(error => {
+    console.error('Failed to initialize services:', error);
+    process.exit(1);
+});
+
 // Middleware setup
 app.use(cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: process.env.FRONTEND_URL ,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     credentials: true
 }));app.use(express.json()); // Parse JSON request bodies
@@ -54,6 +89,7 @@ app.use('/api/reviews', reviews);
 app.use('/api/coupons', coupon); 
 app.use('/api/tickets', support); // NEW: Support ticket routes
 app.use('/api/home', homepageRoutes); // NEW: Homepage content routes
+app.use('/api/menus', menu); // NEW: Menu routes
 
 
 

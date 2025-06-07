@@ -1,52 +1,51 @@
 const express = require('express');
 const router = express.Router();
 const {
+  // User controllers
   createOrder,
-  applyCouponToCart, // New function
+  verifyPayment,
+  applyCoupon,
   getUserOrders,
   getOrder,
   cancelOrder,
+  getOrderInvoice,
+  
+  // Admin controllers
   getAllOrders,
   updateOrderStatus,
-  getDeliveryCharges,
-  updateDeliveryCharge,
-  getDeliveryCharge,
-  processPayment,
-  deleteDeliveryCharge,
-  bulkUploadDeliveryCharges,
-  getDefaultDeliverySettings,
-  updateDefaultDeliverySettings
+  toggleCOD,
+  getCODStatus
 } = require('../controllers/orderController');
 
-const { protect, isAdmin } = require("../middleware/authMiddleware");
+const { protect, isAdmin } = require('../middleware/authMiddleware');
 
-// User routes
-router.post('/', protect, createOrder);
-router.get('/my-orders', protect, getUserOrders);
-router.get('/my-orders/:orderId', protect, getOrder);
-router.patch('/my-orders/:orderId/cancel', protect, cancelOrder);
+// PUBLIC ROUTES
+router.get('/cod-status', getCODStatus);
 
-// NEW: Apply coupon to cart (before placing order)
-router.post('/apply-coupon', protect, applyCouponToCart);
+// USER ROUTES (Protected)
+router.use(protect); // All routes below require authentication
 
-// Delivery charges (user-facing)
-router.get('/delivery-charge/:city', getDeliveryCharge);
+// Order management
+router.post('/', createOrder); // Create order
+router.post('/verify-payment', verifyPayment); // Verify Razorpay payment
 
-// Payment processing
-router.post('/process-payment', processPayment);
+// Cart & Coupon
+router.post('/apply-coupon', applyCoupon);
 
-// Admin routes
-router.get('/admin/all', protect, isAdmin, getAllOrders);
-router.patch('/admin/:orderId/status', protect, isAdmin, updateOrderStatus);
+// User order queries
+router.get('/my-orders', getUserOrders);
+router.get('/my-orders/:orderId', getOrder);
+router.patch('/my-orders/:orderId/cancel', cancelOrder);
+router.get('/invoice/:orderId', getOrderInvoice);
 
-// Admin Delivery charges management routes
-router.get('/admin/delivery-charges', protect, isAdmin, getDeliveryCharges);
-router.post('/admin/delivery-charges', protect, isAdmin, updateDeliveryCharge);
-router.delete('/admin/delivery-charges/:id', protect, isAdmin, deleteDeliveryCharge); // <-- Added DELETE route
-router.post('/admin/delivery-charges/bulk', protect, isAdmin, bulkUploadDeliveryCharges); // <-- Added BULK POST route
+// ADMIN ROUTES (Protected + Admin)
+router.use(isAdmin); // All routes below require admin privileges
 
-// Admin Default Delivery Settings routes
-router.get('/admin/default-delivery-settings', protect, isAdmin, getDefaultDeliverySettings); // <-- New route
-router.put('/admin/default-delivery-settings', protect, isAdmin, updateDefaultDeliverySettings); // <-- New route
+// Order management
+router.get('/admin/orders', getAllOrders);
+router.patch('/admin/orders/:orderId/status', updateOrderStatus);
+
+// Settings
+router.post('/admin/toggle-cod', toggleCOD);
 
 module.exports = router;

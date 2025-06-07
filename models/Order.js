@@ -25,50 +25,44 @@ const shippingAddressSchema = new mongoose.Schema({
   country: { type: String, default: 'India' }
 });
 
-const paymentDetailsSchema = new mongoose.Schema({
-  transactionId: {
-    type: String,
-    unique: true,
-    sparse: true
-  }
-});
-
-// New schema for coupon usage tracking
 const couponUsageSchema = new mongoose.Schema({
   couponId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Coupon',
     required: true
   },
-  code: {
-    type: String,
-    required: true
-  },
+  code: { type: String, required: true },
   type: {
     type: String,
     enum: ['PERCENTAGE', 'FIXED_AMOUNT', 'FREE_SHIPPING'],
     required: true
   },
-  value: {
-    type: Number,
+  value: { type: Number, required: true },
+  discountAmount: { type: Number, default: 0 },
+  discountOnDelivery: { type: Number, default: 0 }
+});
+
+const paymentSchema = new mongoose.Schema({
+  method: {
+    type: String,
+    enum: ['COD', 'RAZORPAY'],
     required: true
   },
-  discountAmount: {
-    type: Number,
-    required: true,
-    default: 0
+  status: {
+    type: String,
+    enum: ['PENDING', 'PAID', 'FAILED', 'REFUNDED'],
+    default: 'PENDING'
   },
-  discountOnDelivery: {
-    type: Number,
-    default: 0
-  }
+  razorpayPaymentId: String,
+  razorpayOrderId: String,
+  razorpaySignature: String,
+  failureReason: String
 });
 
 const orderSchema = new mongoose.Schema({
   orderNumber: {
     type: String,
     unique: true,
-    required: true
   },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -77,82 +71,64 @@ const orderSchema = new mongoose.Schema({
   },
   items: [orderItemSchema],
   shippingAddress: shippingAddressSchema,
+  
+  // Pricing
   subtotal: { type: Number, required: true },
   deliveryCharge: { type: Number, default: 0 },
+  discountAmount: { type: Number, default: 0 },
+  discountOnDelivery: { type: Number, default: 0 },
+  totalAmount: { type: Number, required: true },
   
-  // Coupon-related fields
+  // Coupon
   couponUsed: {
     type: couponUsageSchema,
     default: null
   },
-  discountAmount: {
-    type: Number,
-    default: 0
-  },
-  discountedDeliveryCharge: {
-    type: Number,
-    default: 0
+  
+  // Payment
+  payment: paymentSchema,
+  
+  // Order Status
+  status: {
+    type: String,
+    enum: ['PENDING', 'CONFIRMED', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELLED'],
+    default: 'PENDING'
   },
   
-  totalAmount: { type: Number, required: true },
-  paymentMethod: {
-    type: String,
-    enum: ['COD', 'Online', 'Card'],
-    default: 'COD'
-  },
-  paymentStatus: {
-    type: String,
-    enum: ['Pending', 'Paid', 'Failed', 'Refunded'],
-    default: 'Pending'
-  },
-  paymentDetails: {
-    transactionId: {
-      type: String,
-      unique: true,
-      sparse: true,
-    },
-  },
-  orderStatus: {
-    type: String,
-    enum: ['Pending', 'Confirmed', 'Processing', 'Shipped', 'Delivered', 'Cancelled'],
-    default: 'Pending'
-  },
-  trackingNumber: { type: String },
-  notes: { type: String },
+  // Tracking
+  trackingNumber: String,
+  notes: String,
+  
+  // Timestamps
   placedAt: { type: Date, default: Date.now },
-  shippedAt: { type: Date },
-  deliveredAt: { type: Date },
-  cancelledAt: { type: Date }
+  confirmedAt: Date,
+  shippedAt: Date,
+  deliveredAt: Date,
+  cancelledAt: Date
 }, {
   timestamps: true
 });
 
-// Virtual for final delivery charge after coupon discount
+// Virtuals
 orderSchema.virtual('finalDeliveryCharge').get(function() {
-  return Math.max(0, this.deliveryCharge - (this.couponUsed?.discountOnDelivery || 0));
+  return Math.max(0, this.deliveryCharge - this.discountOnDelivery);
 });
 
-// Virtual for order amount before discount
-orderSchema.virtual('originalTotal').get(function() {
-  return this.subtotal + this.deliveryCharge;
-});
-
-// Virtual for total savings
 orderSchema.virtual('totalSavings').get(function() {
-  return (this.discountAmount || 0) + (this.couponUsed?.discountOnDelivery || 0);
+  return this.discountAmount + this.discountOnDelivery;
 });
 
-// Generate order number before saving if not already set
+// Generate order number
 orderSchema.pre('save', async function(next) {
   if (!this.orderNumber) {
-    const count = await mongoose.model('Order').countDocuments();
-    this.orderNumber = `ORD${Date.now()}${(count + 1).toString().padStart(4, '0')}`;
+    this.orderNumber = `ORD${Date.now()}${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
   }
   next();
 });
 
+// Indexes
 orderSchema.index({ userId: 1, createdAt: -1 });
-orderSchema.index({ orderStatus: 1 });
-orderSchema.index({ 'couponUsed.couponId': 1 });
+orderSchema.index({ status: 1 });
+orderSchema.index({ 'payment.razorpayOrderId': 1 });
 
 module.exports = mongoose.model('Order', orderSchema);

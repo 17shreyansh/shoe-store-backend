@@ -1,279 +1,215 @@
+const OrderService = require('../services/OrderService');
+const PaymentService = require('../services/PaymentService');
 const Order = require('../models/Order');
-const DeliveryCharge = require('../models/DeliveryCharge');
-const Product = require('../models/Product');
-const Coupon = require('../models/Coupon');
-const DefaultDeliverySettings = require('../models/DefaultDeliverySettings');
-const mongoose = require('mongoose');
+const User = require('../models/User');
+const Settings = require('../models/Settings'); // For COD toggle
 
-function generateOrderNumber() {
-    return `ORD${Date.now()}${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
-}
+// Initialize OrderService
+const orderService = new OrderService();
 
-// Create new order with coupon support
+// USER CONTROLLERS
+
+// Consolidated Create Order (Handles both COD and Razorpay initiation)
 const createOrder = async (req, res) => {
     try {
-        const { items, shippingAddress, paymentMethod, paymentDetails, couponCode } = req.body;
         const userId = req.user.id;
+        const { items, shippingAddress, paymentMethod, couponCode } = req.body;
 
-        if (!items || items.length === 0) {
-            return res.status(400).json({ message: 'Order items are required' });
-        }
+        // 1. Validate and calculate order
+        const calculation = await orderService.validateAndCalculateOrder(
+            items,
+            shippingAddress,
+            couponCode,
+            userId
+        );
 
-        let subtotal = 0;
-        const validatedItems = [];
+        // For Razorpay payments, create Razorpay order first
+        if (paymentMethod === 'RAZORPAY') {
+            // Get user's email for Razorpay notes
+            const user = await User.findById(userId);
+            const userEmail = user ? user.email : 'guest@example.com';
 
-        // Validate items and calculate subtotal
-        for (const item of items) {
-            const product = await Product.findById(item.productId);
-            if (!product) {
-                return res.status(404).json({ message: `Product ${item.name} not found` });
+            // Validate amount before converting to paise
+            if (typeof calculation.totalAmount !== 'number' || isNaN(calculation.totalAmount) || calculation.totalAmount <= 0) {
+                throw new Error('Invalid order amount for Razorpay payment');
             }
 
-            validatedItems.push({
-                productId: item.productId,
-                name: product.name,
-                price: product.price,
-                quantity: item.quantity,
-                size: item.size,
-                color: item.color,
-                image: product.mainImage
-            });
+            // Convert amount to paise and ensure it's a whole number
+            const amountInPaise = Math.round(calculation.totalAmount * 100);
 
-            subtotal += product.price * item.quantity;
-        }
+            // Create receipt ID
+            const tempReceiptId = `ORDER_${Date.now()}`;
+            const shortUserId = String(userId).substring(0, 10);
+            const receiptForRazorpay = `${tempReceiptId}_${shortUserId}`;
 
-        // Get delivery charge based on city and state
-        const deliveryInfo = await DeliveryCharge.findOne({
-            city: shippingAddress.city,
-            state: shippingAddress.state,
-            isActive: true
-        });
+            // Create Razorpay order
+            const razorpayOrderResponse = await PaymentService.createRazorpayOrder(
+                amountInPaise,
+                receiptForRazorpay,
+                userEmail
+            );
 
-        let deliveryCharge = deliveryInfo ? deliveryInfo.charge : 50; // Default ₹50
-
-        // Free delivery if threshold met
-        if (deliveryInfo && subtotal >= deliveryInfo.freeDeliveryThreshold) {
-            deliveryCharge = 0;
-        }
-
-        let couponUsed = null;
-        let discountAmount = 0;
-        let discountOnDelivery = 0;
-
-        // Handle coupon validation and application
-        if (couponCode) {
-            const coupon = await Coupon.findOne({ 
-                code: couponCode.toUpperCase(),
-                isActive: true 
-            });
-
-            if (!coupon) {
-                return res.status(400).json({ message: 'Invalid coupon code' });
-            }
-
-            // Check if user can use this coupon
-            if (!coupon.canUserUseCoupon(userId)) {
-                return res.status(400).json({ 
-                    message: 'You have reached the usage limit for this coupon' 
+            if (!razorpayOrderResponse.success) {
+                return res.status(400).json({
+                    message: 'Failed to initiate online payment.',
+                    error: razorpayOrderResponse.error
                 });
             }
 
-            // Calculate discount
-            const discountResult = coupon.calculateDiscount(subtotal, deliveryCharge, validatedItems);
-
-            if (discountResult.error) {
-                return res.status(400).json({ message: discountResult.error });
-            }
-
-            discountAmount = discountResult.discount || 0;
-            discountOnDelivery = discountResult.discountOnDelivery || 0;
-
-            // Prepare coupon usage data
-            couponUsed = {
-                couponId: coupon._id,
-                code: coupon.code,
-                type: coupon.type,
-                value: coupon.value,
-                discountAmount: discountAmount,
-                discountOnDelivery: discountOnDelivery
-            };
-
-            // Update coupon usage statistics
-            await Coupon.findByIdAndUpdate(coupon._id, {
-                $inc: { usageCount: 1 },
-                $addToSet: {
-                    usedBy: {
-                        userId: userId,
-                        usageCount: 1,
-                        lastUsed: new Date()
-                    }
-                }
-            });
-
-            // Update user-specific usage count
-            await Coupon.updateOne(
-                { 
-                    _id: coupon._id,
-                    'usedBy.userId': userId
+            // For Razorpay payments, don't create the order yet
+            // Just return the payment details and calculation
+            return res.status(201).json({
+                success: true,
+                message: 'Payment initiation successful',
+                orderData: {
+                    items,
+                    shippingAddress,
+                    paymentMethod,
+                    couponCode,
+                    userId
                 },
-                {
-                    $inc: { 'usedBy.$.usageCount': 1 },
-                    $set: { 'usedBy.$.lastUsed': new Date() }
-                }
-            );
+                razorpayDetails: {
+                    orderId: razorpayOrderResponse.orderId,
+                    amount: razorpayOrderResponse.amount,
+                    currency: razorpayOrderResponse.currency,
+                    key: process.env.RAZORPAY_KEY_ID
+                },
+                orderCalculation: calculation
+            });
         }
 
-        // Calculate final amounts
-        const finalDeliveryCharge = Math.max(0, deliveryCharge - discountOnDelivery);
-        const finalSubtotal = Math.max(0, subtotal - discountAmount);
-        const totalAmount = finalSubtotal + finalDeliveryCharge;
-
-        const orderNumber = generateOrderNumber();
-
-        const orderData = {
-            orderNumber,
-            userId,
-            items: validatedItems,
+        // For COD orders, create the order immediately
+        const order = await orderService.createOrder({
+            items,
             shippingAddress,
-            subtotal,
-            deliveryCharge,
-            couponUsed,
-            discountAmount,
-            discountedDeliveryCharge: discountOnDelivery,
-            totalAmount,
             paymentMethod,
-            paymentStatus: paymentMethod === 'COD' ? 'Pending' : 'Paid'
-        };
+            couponCode
+        }, userId);
 
-        if (paymentMethod === 'Online' && paymentDetails?.transactionId) {
-            orderData.paymentDetails = {
-                transactionId: paymentDetails.transactionId
-            };
-        }
-
-        const order = new Order(orderData);
-        await order.save();
-        await order.populate('userId', 'name email');
-
+        // Return the created order
         res.status(201).json({
+            success: true,
             message: 'Order placed successfully',
             order,
             orderNumber: order.orderNumber,
-            savings: {
-                discountAmount,
-                discountOnDelivery,
-                totalSavings: discountAmount + discountOnDelivery
+            orderCalculation: {
+                subtotal: calculation.subtotal,
+                deliveryCharge: calculation.deliveryCharge,
+                discountAmount: calculation.discountAmount,
+                discountOnDelivery: calculation.discountOnDelivery,
+                totalAmount: calculation.totalAmount,
+                savings: calculation.discountAmount + calculation.discountOnDelivery
             }
         });
 
     } catch (error) {
         console.error('Create order error:', error);
-        res.status(500).json({ message: 'Failed to create order', error: error.message });
+        res.status(400).json({ message: error.message });
     }
 };
 
-// Apply coupon to cart (before placing order)
-const applyCouponToCart = async (req, res) => {
+
+// Verify payment and confirm order
+const verifyPayment = async (req, res) => {
     try {
-        console.log('Received apply-coupon request body:', req.body); // Check incoming data
-        const { couponCode, items, shippingAddress } = req.body;
-        const userId = req.user.id; // Assuming req.user.id is correctly populated by protect middleware
+        const {
+            razorpay_order_id,
+            razorpay_payment_id,
+            razorpay_signature,
+            orderData
+        } = req.body;
 
-        if (!couponCode || !items || items.length === 0) {
-            console.log('Validation failed: Missing couponCode or items');
-            return res.status(400).json({
-                message: 'Coupon code and items are required'
-            });
-        }
-        console.log('Coupon Code:', couponCode);
-        console.log('Items:', items);
-        console.log('Shipping Address:', shippingAddress);
-        console.log('User ID:', userId);
-
-        // Calculate subtotal
-        let subtotal = 0;
-        for (const item of items) {
-            const product = await Product.findById(item.productId);
-            if (!product) { // Add a check for product existence
-                console.log(`Product with ID ${item.productId} not found.`);
-                return res.status(400).json({ message: `Product with ID ${item.productId} not found.` });
-            }
-            if (product) {
-                subtotal += product.price * item.quantity;
-            }
-        }
-        console.log('Calculated Subtotal:', subtotal);
-
-        // ... rest of your code
-
-        // Find and validate coupon
-        const coupon = await Coupon.findOne({
-            code: couponCode.toUpperCase(),
-            isActive: true
+        console.log('[verifyPayment] Payment verification started:', {
+            razorpayOrderId: razorpay_order_id,
+            paymentId: razorpay_payment_id,
+            orderData: orderData
         });
 
-        if (!coupon) {
-            console.log('Coupon not found or inactive:', couponCode);
-            return res.status(400).json({ message: 'Invalid coupon code' });
-        }
-        console.log('Found Coupon:', coupon.code);
+        // First verify the payment signature
+        const isValid = await PaymentService.verifyPaymentSignature(
+            razorpay_order_id,
+            razorpay_payment_id,
+            razorpay_signature
+        );
 
-        // Check if user can use this coupon
-        // IMPORTANT: Ensure `canUserUseCoupon` method exists on your Coupon model and works as expected.
-        // It typically returns a boolean. If it throws an error or returns non-boolean, this could break.
-        if (!coupon.canUserUseCoupon(userId)) {
-            console.log('User usage limit reached for coupon:', couponCode, 'by user:', userId);
-            return res.status(400).json({
-                message: 'You have reached the usage limit for this coupon'
-            });
+        if (!isValid) {
+            throw new Error('Payment signature validation failed');
         }
 
-        // Calculate discount
-        // IMPORTANT: Ensure `calculateDiscount` method exists on your Coupon model and works as expected.
-        // It typically returns { discount: Number, discountOnDelivery: Number, error: String }
-        const discountResult = coupon.calculateDiscount(subtotal, deliveryCharge, items);
-        console.log('Discount Result:', discountResult);
+        // Use authenticated user's ID
+        const userId = req.user.id;
 
-        if (discountResult.error) {
-            console.log('Discount calculation error:', discountResult.error);
-            return res.status(400).json({ message: discountResult.error });
-        }
+        // Create or update the order with verified Razorpay details
+        const order = await orderService.createOrder({
+            ...orderData,
+            razorpayOrderId: razorpay_order_id,
+            razorpayPaymentId: razorpay_payment_id,
+            razorpaySignature: razorpay_signature
+        }, userId);
 
-        // ... rest of your success logic
+        // If order is created successfully, send the response
+        res.json({
+            success: true,
+            message: 'Payment verified and order confirmed successfully',
+            order
+        });
 
     } catch (error) {
-        console.error('SERVER ERROR in applyCouponToCart:', error); // Catch any unexpected errors
-        // Add specific error handling for Mongoose errors if you want
-        if (error.name === 'CastError') {
-            return res.status(400).json({ message: 'Invalid ID format for product or coupon.' });
-        }
-        res.status(500).json({ message: 'Failed to apply coupon due to a server error.' });
+        console.error('[verifyPayment] Error:', error);
+        res.status(400).json({ 
+            success: false,
+            message: error.message || 'Payment verification failed' 
+        });
     }
 };
 
-// Get user orders (updated to include coupon info)
+// Apply coupon to cart (remains same)
+const applyCoupon = async (req, res) => {
+    try {
+        const { couponCode, items, shippingAddress } = req.body;
+        const userId = req.user.id;
+
+        const calculation = await orderService.validateAndCalculateOrder(
+            items,
+            shippingAddress,
+            couponCode,
+            userId
+        );
+
+        res.json({
+            success: true,
+            message: 'Coupon applied successfully',
+            calculation: {
+                subtotal: calculation.subtotal,
+                deliveryCharge: calculation.deliveryCharge,
+                discountAmount: calculation.discountAmount,
+                discountOnDelivery: calculation.discountOnDelivery,
+                totalAmount: calculation.totalAmount,
+                savings: calculation.discountAmount + calculation.discountOnDelivery,
+                coupon: calculation.couponUsed
+            }
+        });
+
+    } catch (error) {
+        console.error('Apply coupon error:', error);
+        res.status(400).json({ message: error.message });
+    }
+};
+
+// Get user orders (remains same)
 const getUserOrders = async (req, res) => {
     try {
         const userId = req.user.id;
         const { page = 1, limit = 10, status } = req.query;
 
-        const filter = { userId };
-        if (status) filter.orderStatus = status;
+        const filters = { userId };
+        if (status) filters.status = status.toUpperCase();
 
-        const orders = await Order.find(filter)
-            .sort({ createdAt: -1 })
-            .limit(limit * 1)
-            .skip((page - 1) * limit)
-            .populate('items.productId', 'slug')
-            .populate('couponUsed.couponId', 'name');
-
-        const total = await Order.countDocuments(filter);
+        const result = await orderService.getOrders(filters, { page, limit });
 
         res.json({
-            orders,
-            totalPages: Math.ceil(total / limit),
-            currentPage: page,
-            total
+            success: true,
+            ...result
         });
 
     } catch (error) {
@@ -282,7 +218,7 @@ const getUserOrders = async (req, res) => {
     }
 };
 
-// Get single order (updated to include coupon info)
+// Get single order (remains same, but consider if this should also allow lookup by razorpayOrderId for convenience)
 const getOrder = async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -292,14 +228,15 @@ const getOrder = async (req, res) => {
             $or: [{ _id: orderId }, { orderNumber: orderId }],
             userId
         })
-        .populate('items.productId', 'slug')
-        .populate('couponUsed.couponId', 'name description');
+            .populate('userId', 'name email')
+            .populate('items.productId', 'slug')
+            .populate('couponUsed.couponId', 'name description');
 
         if (!order) {
             return res.status(404).json({ message: 'Order not found' });
         }
 
-        res.json(order);
+        res.json({ success: true, order });
 
     } catch (error) {
         console.error('Get order error:', error);
@@ -307,127 +244,60 @@ const getOrder = async (req, res) => {
     }
 };
 
-// Cancel order (user) - updated to handle coupon refund
+// Cancel order (remains same)
 const cancelOrder = async (req, res) => {
     try {
         const { orderId } = req.params;
+        const userId = req.user.id;
 
-        if (!req.user || !req.user._id) {
-            return res.status(401).json({ message: 'Authentication required or user ID not found.' });
-        }
-        const userId = req.user._id;
+        const order = await orderService.cancelOrder(orderId, userId);
 
-        if (!mongoose.Types.ObjectId.isValid(orderId)) {
-            return res.status(400).json({ message: 'Invalid order ID format provided.' });
-        }
-
-        const order = await Order.findById(orderId);
-
-        if (!order) {
-            return res.status(404).json({ message: 'Order not found.' });
-        }
-
-        if (order.userId.toString() !== userId.toString()) {
-            return res.status(403).json({ message: 'You do not have permission to cancel this order.' });
-        }
-
-        if (!['Pending', 'Confirmed'].includes(order.orderStatus)) {
-            return res.status(400).json({ message: `Order cannot be cancelled in '${order.orderStatus}' status.` });
-        }
-
-        // Refund coupon usage if order had a coupon
-        if (order.couponUsed && order.couponUsed.couponId) {
-            await Coupon.findByIdAndUpdate(order.couponUsed.couponId, {
-                $inc: { usageCount: -1 }
-            });
-
-            // Decrease user-specific usage count
-            await Coupon.updateOne(
-                { 
-                    _id: order.couponUsed.couponId,
-                    'usedBy.userId': userId
-                },
-                {
-                    $inc: { 'usedBy.$.usageCount': -1 }
-                }
-            );
-        }
-
-        order.orderStatus = 'Cancelled';
-        order.cancelledAt = new Date();
-        await order.save();
-
-        res.json({ message: 'Order cancelled successfully', order });
+        res.json({
+            success: true,
+            message: 'Order cancelled successfully',
+            order
+        });
 
     } catch (error) {
-        if (error instanceof mongoose.CastError && error.path === '_id') {
-            return res.status(400).json({ message: 'Invalid order ID format provided.' });
-        }
-
-        res.status(500).json({ message: 'Failed to cancel order due to a server error.' });
+        console.error('Cancel order error:', error);
+        res.status(400).json({ message: error.message });
     }
 };
 
-// ADMIN FUNCTIONS
+// ADMIN CONTROLLERS (remain same)
 
-// Get all orders (admin) - updated to include coupon info
+// Get all orders (admin)
 const getAllOrders = async (req, res) => {
     try {
         const { page = 1, limit = 20, status, search } = req.query;
 
-        const filter = {};
-        if (status) filter.orderStatus = status;
+        const filters = {};
+        if (status) filters.status = status.toUpperCase();
         if (search) {
-            filter.$or = [
+            filters.$or = [
                 { orderNumber: { $regex: search, $options: 'i' } },
                 { 'shippingAddress.fullName': { $regex: search, $options: 'i' } },
-                { 'shippingAddress.phone': { $regex: search, $options: 'i' } },
-                { 'couponUsed.code': { $regex: search, $options: 'i' } }
+                { 'shippingAddress.phone': { $regex: search, $options: 'i' } }
             ];
         }
 
-        const orders = await Order.find(filter)
-            .populate('userId', 'name email')
-            .populate('couponUsed.couponId', 'name')
-            .sort({ createdAt: -1 })
-            .limit(limit * 1)
-            .skip((page - 1) * limit);
+        const result = await orderService.getOrders(filters, { page, limit });
 
-        const total = await Order.countDocuments(filter);
-
+        // Get order statistics
         const stats = await Order.aggregate([
             {
                 $group: {
-                    _id: '$orderStatus',
+                    _id: '$status',
                     count: { $sum: 1 },
-                    totalAmount: { $sum: '$totalAmount' },
-                    totalDiscount: { $sum: '$discountAmount' }
-                }
-            }
-        ]);
-
-        // Get coupon usage stats
-        const couponStats = await Order.aggregate([
-            {
-                $match: { 'couponUsed.couponId': { $exists: true } }
-            },
-            {
-                $group: {
-                    _id: null,
-                    totalCouponOrders: { $sum: 1 },
-                    totalDiscount: { $sum: '$discountAmount' },
-                    totalDeliveryDiscount: { $sum: '$discountedDeliveryCharge' }
+                    totalAmount: { $sum: '$totalAmount' }
                 }
             }
         ]);
 
         res.json({
-            orders,
-            totalPages: Math.ceil(total / limit),
-            currentPage: page,
-            total,
-            stats,
-            couponStats: couponStats[0] || { totalCouponOrders: 0, totalDiscount: 0, totalDeliveryDiscount: 0 }
+            success: true,
+            ...result,
+            stats
         });
 
     } catch (error) {
@@ -447,37 +317,45 @@ const updateOrderStatus = async (req, res) => {
             return res.status(404).json({ message: 'Order not found' });
         }
 
-        order.orderStatus = status;
+        order.status = status.toUpperCase();
         if (trackingNumber) order.trackingNumber = trackingNumber;
         if (notes) order.notes = notes;
 
-        if (status === 'Shipped') order.shippedAt = new Date();
-        if (status === 'Delivered') order.deliveredAt = new Date();
-        if (status === 'Cancelled') {
-            order.cancelledAt = new Date();
-            
-            // Refund coupon usage if order had a coupon
-            if (order.couponUsed && order.couponUsed.couponId) {
-                await Coupon.findByIdAndUpdate(order.couponUsed.couponId, {
-                    $inc: { usageCount: -1 }
-                });
-
-                // Decrease user-specific usage count
-                await Coupon.updateOne(
-                    { 
-                        _id: order.couponUsed.couponId,
-                        'usedBy.userId': order.userId
-                    },
-                    {
-                        $inc: { 'usedBy.$.usageCount': -1 }
+        // Update timestamps based on status
+        const now = new Date();
+        switch (status.toUpperCase()) {
+            case 'CONFIRMED':
+                order.confirmedAt = now;
+                break;
+            case 'SHIPPED':
+                order.shippedAt = now;
+                break;
+            case 'DELIVERED':
+                order.deliveredAt = now;
+                break;
+            case 'CANCELLED':
+                order.cancelledAt = now;
+                // Handle refund if needed
+                if (order.payment.status === 'PAID' && order.payment.razorpayPaymentId) {
+                    const refundResult = await PaymentService.refundPayment(
+                        order.payment.razorpayPaymentId,
+                        order.totalAmount,
+                        'Order cancelled by admin'
+                    );
+                    if (refundResult.success) {
+                        order.payment.status = 'REFUNDED';
                     }
-                );
-            }
+                }
+                break;
         }
 
         await order.save();
 
-        res.json({ message: 'Order status updated successfully', order });
+        res.json({
+            success: true,
+            message: 'Order status updated successfully',
+            order
+        });
 
     } catch (error) {
         console.error('Update order status error:', error);
@@ -485,238 +363,212 @@ const updateOrderStatus = async (req, res) => {
     }
 };
 
-// Rest of the functions remain the same...
-// Delivery charge management (Admin)
-const getDeliveryCharges = async (req, res) => {
+// Toggle COD availability (admin) (remains same)
+const toggleCOD = async (req, res) => {
     try {
-        const { page = 1, limit = 10, state, city, isActive } = req.query;
-        const filter = {};
+        const { enabled } = req.body;
 
-        if (state) filter.state = { $regex: state, $options: 'i' };
-        if (city) filter.city = { $regex: city, $options: 'i' };
-        if (isActive !== undefined) {
-            filter.isActive = isActive === 'true';
-        }
-
-        const charges = await DeliveryCharge.find(filter)
-            .sort({ state: 1, city: 1 })
-            .limit(limit * 1)
-            .skip((page - 1) * limit);
-
-        const total = await DeliveryCharge.countDocuments(filter);
-
-        res.json({
-            deliveryCharges: charges,
-            currentPage: parseInt(page),
-            total: total
-        });
-    } catch (error) {
-        console.error('Get delivery charges error:', error);
-        res.status(500).json({ message: 'Failed to fetch delivery charges' });
-    }
-};
-
-const updateDeliveryCharge = async (req, res) => {
-    try {
-        const { city, state, charge, minimumOrderValue, freeDeliveryThreshold, estimatedDays, isActive } = req.body;
-
-        if (!city || !state || charge === undefined) {
-            return res.status(400).json({ message: 'State, City, and Charge are required.' });
-        }
-
-        const deliveryCharge = await DeliveryCharge.findOneAndUpdate(
-            { city: city.trim(), state: state.trim() },
-            {
-                city: city.trim(),
-                state: state.trim(),
-                charge,
-                minimumOrderValue: minimumOrderValue !== undefined ? minimumOrderValue : 0,
-                freeDeliveryThreshold: freeDeliveryThreshold !== undefined ? freeDeliveryThreshold : 0,
-                estimatedDays: estimatedDays !== undefined ? estimatedDays : 3,
-                isActive: isActive !== undefined ? isActive : true
-            },
-            { upsert: true, new: true, runValidators: true }
+        await Settings.findOneAndUpdate(
+            { key: 'COD_ENABLED' },
+            { key: 'COD_ENABLED', value: enabled },
+            { upsert: true }
         );
 
-        res.status(200).json({ message: 'Delivery charge saved successfully', deliveryCharge });
-
-    } catch (error) {
-        console.error('Save delivery charge error:', error);
-        if (error.name === 'ValidationError') {
-            return res.status(400).json({ message: error.message, errors: error.errors });
-        }
-        res.status(500).json({ message: 'Failed to save delivery charge', error: error.message });
-    }
-};
-
-const deleteDeliveryCharge = async (req, res) => {
-    try {
-        const { id } = req.params;
-        if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ message: 'Invalid delivery charge ID format.' });
-        }
-        const result = await DeliveryCharge.findByIdAndDelete(id);
-        if (!result) {
-            return res.status(404).json({ message: 'Delivery charge not found.' });
-        }
-        res.json({ message: 'Delivery charge deleted successfully' });
-    } catch (error) {
-        console.error('Delete delivery charge error:', error);
-        res.status(500).json({ message: 'Failed to delete delivery charge' });
-    }
-};
-
-const bulkUploadDeliveryCharges = async (req, res) => {
-    try {
-        const { deliveryCharges } = req.body;
-        if (!Array.isArray(deliveryCharges) || deliveryCharges.length === 0) {
-            return res.status(400).json({ message: 'An array of delivery charges is required for bulk upload.' });
-        }
-
-        const success = [];
-        const errors = [];
-
-        for (const chargeData of deliveryCharges) {
-            try {
-                const validatedChargeData = {
-                    state: chargeData.state?.trim(),
-                    city: chargeData.city?.trim(),
-                    charge: parseFloat(chargeData.charge) || 0,
-                    minimumOrderValue: parseFloat(chargeData.minimumOrderValue) || 0,
-                    freeDeliveryThreshold: parseFloat(chargeData.freeDeliveryThreshold) || 0,
-                    estimatedDays: parseInt(chargeData.estimatedDays) || 3,
-                    isActive: chargeData.isActive !== undefined ? (String(chargeData.isActive).toLowerCase() === 'true') : true
-                };
-
-                const result = await DeliveryCharge.findOneAndUpdate(
-                    { state: validatedChargeData.state, city: validatedChargeData.city },
-                    { $set: validatedChargeData },
-                    { upsert: true, new: true, runValidators: true }
-                );
-                success.push(result);
-            } catch (error) {
-                errors.push({ data: chargeData, error: error.message });
-            }
-        }
-        res.json({ message: 'Bulk upload processed.', success, errors });
-    } catch (error) {
-        console.error('Bulk upload delivery charges error:', error);
-        res.status(500).json({ message: 'Failed to process bulk upload.' });
-    }
-};
-
-const getDefaultDeliverySettings = async (req, res) => {
-    try {
-        let settings = await DefaultDeliverySettings.findOne({ settingName: 'GLOBAL_DEFAULT_DELIVERY' });
-
-        if (!settings) {
-            settings = await DefaultDeliverySettings.create({
-                settingName: 'GLOBAL_DEFAULT_DELIVERY',
-                charge: 50,
-                minimumOrderValue: 0,
-                freeDeliveryThreshold: 500,
-                estimatedDays: 3
-            });
-        }
-        res.status(200).json(settings);
-    } catch (error) {
-        console.error('Get default delivery settings error:', error);
-        res.status(500).json({ message: 'Failed to fetch default delivery settings' });
-    }
-};
-
-const updateDefaultDeliverySettings = async (req, res) => {
-    try {
-        const { charge, minimumOrderValue, freeDeliveryThreshold, estimatedDays } = req.body;
-
-        const settings = await DefaultDeliverySettings.findOneAndUpdate(
-            { settingName: 'GLOBAL_DEFAULT_DELIVERY' },
-            {
-                charge: charge !== undefined ? charge : 50,
-                minimumOrderValue: minimumOrderValue !== undefined ? minimumOrderValue : 0,
-                freeDeliveryThreshold: freeDeliveryThreshold !== undefined ? freeDeliveryThreshold : 500,
-                estimatedDays: estimatedDays !== undefined ? estimatedDays : 3
-            },
-            { upsert: true, new: true, runValidators: true }
-        );
-
-        res.status(200).json({ message: 'Default delivery settings updated successfully', settings });
-    } catch (error) {
-        console.error('Update default delivery settings error:', error);
-        if (error.name === 'ValidationError') {
-            return res.status(400).json({ message: error.message, errors: error.errors });
-        }
-        res.status(500).json({ message: 'Failed to update default delivery settings', error: error.message });
-    }
-};
-
-const getDeliveryCharge = async (req, res) => {
-    try {
-        const { city } = req.params;
-
-        const deliveryInfo = await DeliveryCharge.findOne({
-            city: city,
-            isActive: true
+        res.json({
+            success: true,
+            message: `COD ${enabled ? 'enabled' : 'disabled'} successfully`,
+            codEnabled: enabled
         });
 
-        const charge = deliveryInfo ? deliveryInfo.charge : 50;
-        const freeThreshold = deliveryInfo ? deliveryInfo.freeDeliveryThreshold : 0;
+    } catch (error) {
+        console.error('Toggle COD error:', error);
+        res.status(500).json({ message: 'Failed to update COD settings' });
+    }
+};
+
+// Get COD status (remains same)
+const getCODStatus = async (req, res) => {
+    try {
+        const setting = await Settings.findOne({ key: 'COD_ENABLED' });
+        const codEnabled = setting ? setting.value : true; // Default to enabled
 
         res.json({
-            charge,
-            freeDeliveryThreshold: freeThreshold,
-            city
+            success: true,
+            codEnabled
         });
 
     } catch (error) {
-        console.error('Get delivery charge error:', error);
-        res.status(500).json({ message: 'Failed to fetch delivery charge' });
+        console.error('Get COD status error:', error);
+        res.status(500).json({ message: 'Failed to fetch COD status' });
     }
 };
 
-const processPayment = async (req, res) => {
+// Helper function to generate invoice HTML
+const generateInvoiceHtml = (order) => {
+    if (!order) return '<div>No order found.</div>';
+
+    const formatCurrency = (amount) => {
+        return new Intl.NumberFormat('en-IN', {
+            style: 'currency',
+            currency: 'INR'
+        }).format(amount);
+    };
+
+    const formatDate = (date) => new Date(date).toLocaleDateString('en-IN');
+
+    const itemsHtml = order.items.map(item => `
+        <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 8px 0;">${item.productId.name}</td>
+            <td style="padding: 8px 0; text-align: center;">${item.quantity}</td>
+            <td style="padding: 8px 0; text-align: right;">${formatCurrency(item.price)}</td>
+            <td style="padding: 8px 0; text-align: right;">${formatCurrency(item.price * item.quantity)}</td>
+        </tr>
+    `).join('');
+
+    return `
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Invoice #${order.orderNumber}</title>
+            <style>
+                body { font-family: 'Arial', sans-serif; margin: 20px; color: #333; }
+                .container { width: 800px; margin: 0 auto; border: 1px solid #eee; padding: 30px; box-shadow: 0 0 10px rgba(0,0,0,0.05); }
+                .header, .footer { text-align: center; margin-bottom: 30px; }
+                .header h1 { margin: 0; color: #555; }
+                .invoice-details, .customer-details, .summary-details { margin-bottom: 20px; }
+                .invoice-details table, .customer-details table, .summary-details table { width: 100%; border-collapse: collapse; }
+                .invoice-details td, .customer-details td, .summary-details td { padding: 5px; vertical-align: top; }
+                .invoice-details .label, .customer-details .label, .summary-details .label { font-weight: bold; width: 150px; }
+                .items-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+                .items-table th, .items-table td { border: 1px solid #eee; padding: 8px; text-align: left; }
+                .items-table th { background-color: #f9f9f9; }
+                .total-row { font-weight: bold; background-color: #f0f0f0; }
+                .text-right { text-align: right; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>Invoice</h1>
+                    <p>Order Number: <strong>${order.orderNumber}</strong></p>
+                    <p>Date: ${formatDate(order.createdAt)}</p>
+                </div>
+
+                <div class="customer-details">
+                    <table style="width: 100%;">
+                        <tr>
+                            <td style="width: 50%;">
+                                <strong>Bill To:</strong><br/>
+                                ${order.userId.name || 'N/A'}<br/>
+                                ${order.userId.email || 'N/A'}<br/>
+                                ${order.shippingAddress.phone || 'N/A'}
+                            </td>
+                            <td style="width: 50%;">
+                                <strong>Ship To:</strong><br/>
+                                ${order.shippingAddress.fullName || order.userId.name || 'N/A'}<br/>
+                                ${order.shippingAddress.address || 'N/A'}<br/>
+                                ${order.shippingAddress.city || 'N/A'}, ${order.shippingAddress.state || 'N/A'} - ${order.shippingAddress.pincode || 'N/A'}
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+
+                <table class="items-table">
+                    <thead>
+                        <tr>
+                            <th>Item</th>
+                            <th style="text-align: center;">Qty</th>
+                            <th style="text-align: right;">Unit Price</th>
+                            <th style="text-align: right;">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${itemsHtml}
+                    </tbody>
+                </table>
+
+                <div class="summary-details" style="width: 100%; text-align: right;">
+                    <table style="width: 50%; float: right;">
+                        <tr>
+                            <td>Subtotal:</td>
+                            <td class="text-right">${formatCurrency(order.subtotal)}</td>
+                        </tr>
+                        <tr>
+                            <td>Delivery Charge:</td>
+                            <td class="text-right">${formatCurrency(order.deliveryCharge)}</td>
+                        </tr>
+                        ${order.discountAmount > 0 ? `
+                        <tr>
+                            <td>Discount:</td>
+                            <td class="text-right">-${formatCurrency(order.discountAmount)}</td>
+                        </tr>` : ''}
+                        <tr class="total-row">
+                            <td>Grand Total:</td>
+                            <td class="text-right">${formatCurrency(order.totalAmount)}</td>
+                        </tr>
+                        <tr>
+                            <td>Payment Method:</td>
+                            <td class="text-right">${order.paymentMethod} (${order.payment?.status || 'N/A'})</td>
+                        </tr>
+                    </table>
+                    <div style="clear: both;"></div>
+                </div>
+
+                <div class="footer" style="margin-top: 50px;">
+                    <p>Thank you for your business!</p>
+                </div>
+            </div>
+        </body>
+        </html>
+    `;
+};
+
+// Get order invoice
+const getOrderInvoice = async (req, res) => {
     try {
-        const { amount, paymentMethod, cardDetails } = req.body;
+        const { orderId } = req.params;
+        const userId = req.user.id;
 
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Find order and validate ownership
+        const order = await Order.findOne({
+            $or: [{ _id: orderId }, { orderNumber: orderId }],
+            userId
+        })
+        .populate('userId', 'name email')
+        .populate('items.productId', 'name');
 
-        const isSuccess = Math.random() > 0.1;
-
-        if (isSuccess) {
-            res.json({
-                success: true,
-                transactionId: `TXN${Date.now()}${Math.floor(Math.random() * 1000)}`,
-                message: 'Payment processed successfully',
-                amount
-            });
-        } else {
-            res.status(400).json({
-                success: false,
-                message: 'Payment failed. Please try again.',
-                errorCode: 'PAYMENT_FAILED'
-            });
+        if (!order) {
+            return res.status(404).json({ message: 'Order not found' });
         }
 
+        // Generate invoice HTML
+        const invoiceHtml = generateInvoiceHtml(order);
+
+        // Send response
+        res.set('Content-Type', 'text/html');
+        res.status(200).send(invoiceHtml);
+
     } catch (error) {
-        console.error('Payment processing error:', error);
-        res.status(500).json({ message: 'Payment processing failed' });
+        console.error('Get invoice error:', error);
+        res.status(500).json({ message: 'Failed to generate invoice' });
     }
 };
 
 module.exports = {
-    createOrder,
-    applyCouponToCart, // New function
+    // User routes
+    // Removed createPaymentOrder as it's merged into createOrder
+    createOrder, // This is now the main endpoint for order creation
+    verifyPayment,
+    applyCoupon,
     getUserOrders,
     getOrder,
     cancelOrder,
+    getOrderInvoice,
+
+    // Admin routes
     getAllOrders,
     updateOrderStatus,
-    getDeliveryCharges,
-    updateDeliveryCharge,
-    getDeliveryCharge,
-    processPayment,
-    deleteDeliveryCharge,
-    bulkUploadDeliveryCharges,
-    getDefaultDeliverySettings,
-    updateDefaultDeliverySettings
+    toggleCOD,
+    getCODStatus
 };
