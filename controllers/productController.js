@@ -9,10 +9,10 @@ exports.createProduct = async (req, res) => {
     const product = new Product(req.body);
     await product.save();
     
-    // Populate brand and category for response
+    // Populate brand and categories for response
     await product.populate([
       { path: 'brand', select: 'name logo' },
-      { path: 'category', select: 'name' }
+      { path: 'categories', select: 'name' }
     ]);
     
     res.status(201).json(product);
@@ -43,10 +43,10 @@ exports.getProducts = async (req, res) => {
     
     let query = {};
 
-    if (category) query.category = category;
+    if (category) query.categories = { $in: [category] };
     if (brand) query.brand = brand;
     if (gender) query.gender = gender;
-
+    
     // Handle multiple selections using $in operator
     if (material) {
       const materialsArray = material.split(',').map(m => new RegExp(m.trim(), 'i'));
@@ -85,7 +85,7 @@ exports.getProducts = async (req, res) => {
     }
 
     let productsQuery = Product.find(query)
-      .populate("category", "name")
+      .populate("categories", "name")
       .populate("brand", "name logo");
 
     // Sorting
@@ -113,11 +113,11 @@ exports.getProductById = async (req, res) => {
 
     if (mongoose.Types.ObjectId.isValid(identifier)) {
       product = await Product.findById(identifier)
-        .populate("category", "name")
+        .populate("categories", "name")
         .populate("brand", "name logo");
     } else {
       product = await Product.findOne({ slug: identifier })
-        .populate("category", "name")
+        .populate("categories", "name")
         .populate("brand", "name logo");
     }
 
@@ -141,7 +141,7 @@ exports.updateProduct = async (req, res) => {
       runValidators: true,
     }).populate([
       { path: 'brand', select: 'name logo' },
-      { path: 'category', select: 'name' }
+      { path: 'categories', select: 'name' }
     ]);
     
     if (!product) {

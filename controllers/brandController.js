@@ -54,6 +54,22 @@ exports.getBrandById = async (req, res) => {
   }
 };
 
+// @desc    Get brand by slug
+// @route   GET /api/brands/by-slug/:slug
+// @access  Public
+exports.getBrandBySlug = async (req, res) => {
+  try {
+    const brand = await Brand.findOne({ slug: req.params.slug });
+    if (!brand) {
+      return res.status(404).json({ message: "Brand not found" });
+    }
+    res.json(brand);
+  } catch (err) {
+    console.error("Error fetching brand by slug:", err);
+    res.status(500).json({ error: "Failed to fetch brand" });
+  }
+};
+
 // @desc    Update a brand
 // @route   PUT /api/brands/:id
 // @access  Private/Admin

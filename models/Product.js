@@ -43,12 +43,10 @@ const productSchema = new mongoose.Schema({
   
   rating: { type: Number, default: 0, min: 0, max: 5 },
   reviewsCount: { type: Number, default: 0, min: 0 },
-  
-  category: {
+    categories: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: "Category",
-    required: true,
-  },
+  }],
   
   isFeatured: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },

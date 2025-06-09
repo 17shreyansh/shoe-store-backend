@@ -3,6 +3,7 @@ const {
   createBrand,
   getBrands,
   getBrandById,
+  getBrandBySlug,
   updateBrand,
   deleteBrand,
 } = require("../controllers/brandController");
@@ -17,6 +18,7 @@ router.delete("/:id", protect, isAdmin, deleteBrand);
 
 // Public routes
 router.get("/", getBrands);
+router.get("/by-slug/:slug", getBrandBySlug);
 router.get("/:id", getBrandById);
 
 module.exports = router;
