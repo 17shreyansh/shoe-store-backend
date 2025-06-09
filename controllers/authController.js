@@ -15,8 +15,8 @@ const sendTokenResponse = (user, statusCode, res) => {
         expires: new Date(Date.now() + process.env.JWT_COOKIE_EXPIRE * 24 * 60 * 60 * 1000), // Cookie expiration
         httpOnly: true, // Makes the cookie inaccessible to client-side scripts
         // Set secure to true in production for HTTPS only cookies
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'Lax', // Protection against CSRF attacks
+        secure: true, // process.env.NODE_ENV === 'production', // Uncomment this line in production
+        sameSite: 'None', // Protection against CSRF attacks
     };
 
     // Update user's last login timestamp
