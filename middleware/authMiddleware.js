@@ -29,6 +29,17 @@ exports.protect = async (req, res, next) => {
     next();
   } catch (err) {
     console.error("Token verification error:", err);
+    
+    // Clear invalid token cookie
+    res.clearCookie('token');
+    
+    if (err.name === 'JsonWebTokenError') {
+      return res.status(401).json({ message: "Invalid token, please log in again" });
+    }
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({ message: "Token expired, please log in again" });
+    }
+    
     return res.status(401).json({ message: "Not authorized, token failed" });
   }
 };

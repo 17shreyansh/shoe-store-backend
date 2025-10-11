@@ -62,10 +62,14 @@ initializeServices().catch(error => {
 
 // Middleware setup
 app.use(cors({
-    origin: process.env.FRONTEND_URL ,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    credentials: true
-}));app.use(express.json()); // Parse JSON request bodies
+    origin: [process.env.FRONTEND_URL, 'http://localhost:5173'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    optionsSuccessStatus: 200
+}));
+
+app.use(express.json()); // Parse JSON request bodies
 app.use(express.urlencoded({ extended: false })); // Parse URL-encoded request bodies
 
 // IMPORTANT: Add cookie-parser middleware BEFORE your routes.

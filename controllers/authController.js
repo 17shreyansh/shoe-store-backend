@@ -14,9 +14,9 @@ const sendTokenResponse = (user, statusCode, res) => {
     const options = {
         expires: new Date(Date.now() + process.env.JWT_COOKIE_EXPIRE * 24 * 60 * 60 * 1000), // Cookie expiration
         httpOnly: true, // Makes the cookie inaccessible to client-side scripts
-        // Set secure to true in production for HTTPS only cookies
-        secure: true, // process.env.NODE_ENV === 'production', // Uncomment this line in production
-        sameSite: 'None', // Protection against CSRF attacks
+        secure: false, // Set to false for development
+        sameSite: 'Lax', // Lax for development
+        path: '/' // Ensure cookie is available for all paths
     };
 
     // Update user's last login timestamp
@@ -476,7 +476,7 @@ exports.logout = (req, res) => {
         expires: new Date(Date.now() + 10 * 1000), // Expire cookie almost immediately
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'Lax',
+        sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
     });
 
     res.status(200).json({ success: true, message: 'Logged out successfully.' });
@@ -514,7 +514,7 @@ exports.deactivateAccount = async (req, res) => {
             expires: new Date(Date.now() + 10 * 1000),
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
-            sameSite: 'Lax',
+            sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
         });
 
         res.json({

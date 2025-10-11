@@ -13,7 +13,7 @@ const {
     resendVerification,
     deactivateAccount,
     reactivateAccount,
-    checkAdmin // Keep checkAdmin for basic admin check
+    checkAdmin
 } = require("../controllers/authController");
 const { protect, isAdmin } = require("../middleware/authMiddleware"); // Ensure middleware is correct
 
