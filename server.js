@@ -21,6 +21,7 @@ const coupon = require('./routes/CouponRoutes')
 const support = require('./routes/supportRoutes'); // Import support ticket routes
 const homepageRoutes = require('./routes/homepageRoutes'); // Import homepage routes
 const menu = require('./routes/menuRoutes'); // Import menu routes
+const searchRoutes = require('./routes/searchRoutes'); // Import search routes
 const OrderService = require('./services/OrderService');
 const cron = require('node-cron');
 
@@ -90,6 +91,7 @@ app.use('/api/coupons', coupon);
 app.use('/api/tickets', support); // NEW: Support ticket routes
 app.use('/api/home', homepageRoutes); // NEW: Homepage content routes
 app.use('/api/menus', menu); // NEW: Menu routes
+app.use('/api/search', searchRoutes); // NEW: Search routes
 
 
 

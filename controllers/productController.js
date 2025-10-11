@@ -75,13 +75,27 @@ exports.getProducts = async (req, res) => {
       query.totalStock = { $gt: 0 };
     }
 
-    // Search functionality
+    // Enhanced search functionality
     if (search) {
-      query.$or = [
-        { name: new RegExp(search, 'i') },
-        { description: new RegExp(search, 'i') },
-        { material: new RegExp(search, 'i') },
-      ];
+      const searchTerms = search.split(' ').filter(term => term.length > 0);
+      
+      if (searchTerms.length > 0) {
+        // Create an array of conditions for each search term
+        const searchConditions = searchTerms.map(term => ({
+          $or: [
+            { name: new RegExp(term, 'i') },
+            { description: new RegExp(term, 'i') },
+            { material: new RegExp(term, 'i') },
+            { 'brand.name': new RegExp(term, 'i') },
+            { 'categories.name': new RegExp(term, 'i') },
+            { gender: new RegExp(term, 'i') },
+            { tags: new RegExp(term, 'i') }
+          ]
+        }));
+        
+        // Use $and to require all search terms to match
+        query.$and = searchConditions;
+      }
     }
 
     let productsQuery = Product.find(query)
