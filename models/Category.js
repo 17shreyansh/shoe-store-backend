@@ -22,17 +22,18 @@ const categorySchema = new mongoose.Schema({
 
 // Pre-save hook to generate slug and manage ancestors/level
 categorySchema.pre("save", async function (next) {
-  if (this.isModified("name")) {
+  // Always generate slug if name is present
+  if (this.isModified("name") || this.isNew) {
     this.slug = this.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-*|-*$/g, "");
   }
 
-  if (this.isModified("parent") && this.parent) {
+  if ((this.isModified("parent") || this.isNew) && this.parent) {
     const parentCategory = await this.model("Category").findById(this.parent);
     if (parentCategory) {
       this.ancestors = [...parentCategory.ancestors, parentCategory._id];
       this.level = parentCategory.level + 1;
     }
-  } else if (this.parent === null) {
+  } else if (this.parent === null || this.isNew) {
     this.ancestors = []; // Top-level categories have no ancestors
     this.level = 0;
   }

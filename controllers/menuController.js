@@ -1,61 +1,193 @@
 const Menu = require("../models/Menu");
 const Category = require("../models/Category");
 
-// Get all menu items
+// Get all menu items - dynamically from categories
 const getAllMenus = async (req, res) => {
   try {
-    const menus = await Menu.find({ isActive: true })
-      .populate('category', 'name slug')
-      .sort({ order: 1 });
+    // Get all active categories sorted by level and name
+    const categories = await Category.find()
+      .sort({ level: 1, name: 1 });
+    
+    // Generate menu items from categories
+    const menus = [];
+    
+    for (let i = 0; i < categories.length; i++) {
+      const category = categories[i];
+      
+      // Generate link for category
+      let link = "/category";
+      
+      if (category.ancestors && category.ancestors.length > 0) {
+        const ancestors = await Category.find({
+          '_id': { $in: category.ancestors }
+        }).sort({ level: 1 });
+        
+        for (const ancestor of ancestors) {
+          link += `/${ancestor.slug}`;
+        }
+      }
+      
+      link += `/${category.slug}`;
+      
+      menus.push({
+        _id: category._id,
+        name: category.name,
+        link: link,
+        category: {
+          _id: category._id,
+          name: category.name,
+          slug: category.slug,
+          level: category.level
+        },
+        order: i,
+        isActive: true
+      });
+    }
     
     res.status(200).json({
       success: true,
       data: menus,
+      count: menus.length
     });
   } catch (error) {
     console.error("Error fetching menus:", error);
     res.status(500).json({
       success: false,
       message: "Failed to fetch menu items",
+      error: error.message
     });
   }
 };
 
-// Get all menu items for admin (including inactive)
+// Get all menu items for admin - dynamically from categories
 const getAllMenusAdmin = async (req, res) => {
   try {
-    const menus = await Menu.find()
-      .populate('category', 'name slug ancestors level')
-      .sort({ order: 1 });
+    // Get all categories (including inactive ones if needed)
+    const categories = await Category.find()
+      .sort({ level: 1, name: 1 });
+    
+    // Generate menu items from categories
+    const menus = [];
+    
+    for (let i = 0; i < categories.length; i++) {
+      const category = categories[i];
+      
+      // Generate link for category
+      let link = "/category";
+      
+      if (category.ancestors && category.ancestors.length > 0) {
+        const ancestors = await Category.find({
+          '_id': { $in: category.ancestors }
+        }).sort({ level: 1 });
+        
+        for (const ancestor of ancestors) {
+          link += `/${ancestor.slug}`;
+        }
+      }
+      
+      link += `/${category.slug}`;
+      
+      menus.push({
+        _id: category._id,
+        name: category.name,
+        link: link,
+        category: {
+          _id: category._id,
+          name: category.name,
+          slug: category.slug,
+          level: category.level,
+          ancestors: category.ancestors
+        },
+        order: i,
+        isActive: true
+      });
+    }
     
     res.status(200).json({
       success: true,
       data: menus,
+      count: menus.length
     });
   } catch (error) {
     console.error("Error fetching admin menus:", error);
     res.status(500).json({
       success: false,
       message: "Failed to fetch menu items",
+      error: error.message
     });
   }
 };
 
-// Create new menu item
+// Create new menu item (now creates a category instead)
 const createMenu = async (req, res) => {
   try {
-    const { name, categoryId, order } = req.body;
+    const { name, parentId, description } = req.body;
 
     // Validate required fields
-    if (!name || !categoryId) {
+    if (!name) {
       return res.status(400).json({
         success: false,
-        message: "Name and category are required",
+        message: "Category name is required",
       });
     }
 
-    // Check if category exists
-    const category = await Category.findById(categoryId);
+    // Check if parent category exists (if provided)
+    if (parentId) {
+      const parentCategory = await Category.findById(parentId);
+      if (!parentCategory) {
+        return res.status(404).json({
+          success: false,
+          message: "Parent category not found",
+        });
+      }
+    }
+
+    // Create new category
+    const category = new Category({
+      name,
+      description: description || '',
+      parent: parentId || null,
+    });
+
+    await category.save();
+
+    // Generate link for the new category
+    const link = await generateCategoryLink(category._id);
+
+    res.status(201).json({
+      success: true,
+      data: {
+        _id: category._id,
+        name: category.name,
+        link: link,
+        category: {
+          _id: category._id,
+          name: category.name,
+          slug: category.slug,
+          level: category.level
+        },
+        order: 0,
+        isActive: true
+      },
+      message: "Category created successfully",
+    });
+  } catch (error) {
+    console.error("Error creating category:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to create category",
+      error: error.message
+    });
+  }
+};
+
+// Update menu item (now updates category)
+const updateMenu = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, parentId } = req.body;
+
+    const category = await Category.findById(id);
     if (!category) {
       return res.status(404).json({
         success: false,
@@ -63,107 +195,88 @@ const createMenu = async (req, res) => {
       });
     }
 
-    // Generate link based on category hierarchy
-    const link = await generateCategoryLink(categoryId);
-
-    // Create menu item
-    const menu = new Menu({
-      name,
-      link,
-      category: categoryId,
-      order: order || 0,
-    });
-
-    await menu.save();
-    await menu.populate('category', 'name slug');
-
-    res.status(201).json({
-      success: true,
-      data: menu,
-      message: "Menu item created successfully",
-    });
-  } catch (error) {
-    console.error("Error creating menu:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to create menu item",
-    });
-  }
-};
-
-// Update menu item
-const updateMenu = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, categoryId, order, isActive } = req.body;
-
-    const menu = await Menu.findById(id);
-    if (!menu) {
-      return res.status(404).json({
-        success: false,
-        message: "Menu item not found",
-      });
-    }
-
-    // If category is being changed, validate and update link
-    if (categoryId && categoryId !== menu.category.toString()) {
-      const category = await Category.findById(categoryId);
-      if (!category) {
+    // Check if parent category exists (if provided)
+    if (parentId && parentId !== category.parent?.toString()) {
+      const parentCategory = await Category.findById(parentId);
+      if (!parentCategory) {
         return res.status(404).json({
           success: false,
-          message: "Category not found",
+          message: "Parent category not found",
         });
       }
-      menu.category = categoryId;
-      menu.link = await generateCategoryLink(categoryId);
+      category.parent = parentId;
     }
 
     // Update other fields
-    if (name) menu.name = name;
-    if (order !== undefined) menu.order = order;
-    if (isActive !== undefined) menu.isActive = isActive;
+    if (name) category.name = name;
+    if (description !== undefined) category.description = description;
 
-    await menu.save();
-    await menu.populate('category', 'name slug');
+    await category.save();
+
+    // Generate updated link
+    const link = await generateCategoryLink(category._id);
 
     res.status(200).json({
       success: true,
-      data: menu,
-      message: "Menu item updated successfully",
+      data: {
+        _id: category._id,
+        name: category.name,
+        link: link,
+        category: {
+          _id: category._id,
+          name: category.name,
+          slug: category.slug,
+          level: category.level
+        },
+        order: 0,
+        isActive: true
+      },
+      message: "Category updated successfully",
     });
   } catch (error) {
-    console.error("Error updating menu:", error);
+    console.error("Error updating category:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to update menu item",
+      message: "Failed to update category",
+      error: error.message
     });
   }
 };
 
-// Delete menu item
+// Delete menu item (now deletes category)
 const deleteMenu = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const menu = await Menu.findById(id);
-    if (!menu) {
+    const category = await Category.findById(id);
+    if (!category) {
       return res.status(404).json({
         success: false,
-        message: "Menu item not found",
+        message: "Category not found",
       });
     }
 
-    await Menu.findByIdAndDelete(id);
+    // Check if category has children
+    const childCategories = await Category.find({ parent: id });
+    if (childCategories.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot delete category with subcategories",
+      });
+    }
+
+    await Category.findByIdAndDelete(id);
 
     res.status(200).json({
       success: true,
-      message: "Menu item deleted successfully",
+      message: "Category deleted successfully",
     });
   } catch (error) {
-    console.error("Error deleting menu:", error);
+    console.error("Error deleting category:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to delete menu item",
+      message: "Failed to delete category",
+      error: error.message
     });
   }
 };
@@ -171,7 +284,7 @@ const deleteMenu = async (req, res) => {
 // Helper function to generate category link
 const generateCategoryLink = async (categoryId) => {
   try {
-    const category = await Category.findById(categoryId).populate('ancestors');
+    const category = await Category.findById(categoryId);
     
     if (!category) {
       throw new Error("Category not found");
@@ -180,9 +293,14 @@ const generateCategoryLink = async (categoryId) => {
     // Build the path from ancestors
     let path = "/category";
     
-    // Add ancestor slugs
+    // Add ancestor slugs if they exist
     if (category.ancestors && category.ancestors.length > 0) {
-      for (const ancestor of category.ancestors) {
+      // Get all ancestor categories
+      const ancestors = await Category.find({
+        '_id': { $in: category.ancestors }
+      }).sort({ level: 1 });
+      
+      for (const ancestor of ancestors) {
         path += `/${ancestor.slug}`;
       }
     }
